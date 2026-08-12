@@ -29,9 +29,11 @@ namespace Il2CppInterop.Runtime.Injection
         internal static INativeImageStruct InjectedImage;
         internal static ProcessModule Il2CppModule = Process.GetCurrentProcess()
             .Modules.OfType<ProcessModule>()
-            .Single((x) => x.ModuleName is "GameAssembly.dll" or "GameAssembly.dylib" or "GameAssembly.so" or "UserAssembly.dll" || string.Equals(x.ModuleName, "GameAssembly.dll", StringComparison.OrdinalIgnoreCase));
+            .Single((x) => x.ModuleName is "GameAssembly.dll" or "GameAssembly.dylib" or "GameAssembly.so" or "libil2cpp.so" or "UserAssembly.dll" || string.Equals(x.ModuleName, "GameAssembly.dll", StringComparison.OrdinalIgnoreCase));
 
-        internal static IntPtr Il2CppHandle = NativeLibrary.Load("GameAssembly", typeof(InjectorHelpers).Assembly, null);
+        internal static IntPtr Il2CppHandle = OperatingSystem.IsAndroid()
+            ? NativeLibrary.Load(Il2CppModule.FileName)
+            : NativeLibrary.Load("GameAssembly", typeof(InjectorHelpers).Assembly, null);
 
         internal static readonly Dictionary<Type, OpCode> StIndOpcodes = new()
         {
@@ -71,10 +73,17 @@ namespace Il2CppInterop.Runtime.Injection
         internal static void Setup()
         {
             if (InjectedAssembly == null) CreateInjectedAssembly();
-            if (Il2CppInteropRuntime.Instance.UnityVersion.Major >= 6000)
-                GenericMethodGetMethodHook_Unity6.ApplyHook();
-            else
-                GenericMethodGetMethodHook.ApplyHook();
+            // ARM64 traversal can resolve the 3-parameter shim as this 2-parameter hook target.
+            // Skipping the hook avoids an ABI mismatch, but disables IL2CPP-side inflation of
+            // generic methods declared by injected classes for every Android ARM64 title.
+            // Original game generics and managed-only generic helpers are unaffected.
+            if (!OperatingSystem.IsAndroid() || RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+            {
+                if (Il2CppInteropRuntime.Instance.UnityVersion.Major >= 6000)
+                    GenericMethodGetMethodHook_Unity6.ApplyHook();
+                else
+                    GenericMethodGetMethodHook.ApplyHook();
+            }
             GetTypeInfoFromTypeDefinitionIndexHook.ApplyHook();
             GetFieldDefaultValueHook.ApplyHook();
             ClassInit ??= FindClassInit();
