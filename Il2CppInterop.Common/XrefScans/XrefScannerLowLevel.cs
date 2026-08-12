@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Iced.Intel;
 
 namespace Il2CppInterop.Common.XrefScans;
@@ -6,6 +7,9 @@ public static class XrefScannerLowLevel
 {
     public static IEnumerable<IntPtr> JumpTargets(IntPtr codeStart, bool ignoreRetn = false)
     {
+        if (RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+            return Arm64JumpTargets(codeStart, ignoreRetn);
+
         return JumpTargetsImpl(XrefScanner.DecoderForAddress(codeStart), ignoreRetn);
     }
 
@@ -41,6 +45,41 @@ public static class XrefScannerLowLevel
                 firstFlowControl = false;
             }
         }
+    }
+
+    private static unsafe IntPtr[] Arm64JumpTargets(IntPtr codeStart, bool ignoreRetn)
+    {
+        const int maxInstructions = 512;
+        var targets = new List<IntPtr>(16);
+        var cursor = (byte*)codeStart;
+        for (var i = 0; i < maxInstructions; i++)
+        {
+            var instruction = *(uint*)(cursor + i * 4);
+            var pc = (ulong)(long)(cursor + i * 4);
+            var op = instruction >> 26;
+
+            if (op == 0b000101) // B imm26
+            {
+                var immediate = (int)(instruction << 6) >> 6;
+                targets.Add((IntPtr)(pc + (ulong)((long)immediate << 2)));
+                break;
+            }
+
+            if (op == 0b100101) // BL imm26
+            {
+                var immediate = (int)(instruction << 6) >> 6;
+                targets.Add((IntPtr)(pc + (ulong)((long)immediate << 2)));
+                continue;
+            }
+
+            if ((instruction & 0xFFFFFC1F) == 0xD65F0000) // RET
+            {
+                if (!ignoreRetn)
+                    break;
+            }
+        }
+
+        return targets.ToArray();
     }
 
     public static IEnumerable<IntPtr> CallAndIndirectTargets(IntPtr pointer)

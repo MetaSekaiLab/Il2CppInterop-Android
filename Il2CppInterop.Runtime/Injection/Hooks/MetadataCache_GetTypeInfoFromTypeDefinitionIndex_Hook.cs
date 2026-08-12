@@ -73,7 +73,8 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
                     getTypeInfoFromTypeDefinitionIndex = imageGetType;
                 }
                 else getTypeInfoFromTypeDefinitionIndex = imageGetTypeXrefs[0];
-                if ((getTypeInfoFromTypeDefinitionIndex.ToInt64() & 0xF) != 0)
+                var alignmentMask = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? 0x3 : 0xF;
+                if ((getTypeInfoFromTypeDefinitionIndex.ToInt64() & alignmentMask) != 0)
                 {
                     Logger.Instance.LogTrace("Image::GetType xref wasn't aligned, attempting to resolve from icall");
                     return FindGetTypeInfoFromTypeDefinitionIndex(true);
