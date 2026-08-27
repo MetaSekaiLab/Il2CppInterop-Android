@@ -39,6 +39,9 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
     private static readonly MethodInfo ReportExceptionMethodInfo
         = AccessTools.Method(typeof(Il2CppDetourMethodPatcher), nameof(ReportException));
 
+    private static readonly MethodInfo GetArm64ReturnBufferMethodInfo
+        = AccessTools.Method(typeof(Il2CppDetourMethodPatcher), nameof(GetArm64ReturnBuffer));
+
     // Map each value type to correctly sized store opcode to prevent memory overwrite
     // Special case: bool is byte in Il2Cpp
     private static readonly Dictionary<Type, OpCode> StIndOpcodes = new()
@@ -133,7 +136,8 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
         // Generate the MethodInfo instances
         var managedHookedMethod = copiedDmd.Generate();
-        var unmanagedTrampolineMethod = GenerateNativeToManagedTrampoline(managedHookedMethod).Generate();
+        var unmanagedTrampolineMethod =
+            GenerateNativeToManagedTrampoline(managedHookedMethod, out var specialReturnBuffer).Generate();
 
         // Apply a detour from the unmanaged implementation to the patched harmony method
         var unmanagedDelegateType = DelegateTypeFactory.instance.CreateDelegateType(unmanagedTrampolineMethod,
@@ -143,13 +147,15 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         DelegateCache.Add(unmanagedDelegate);
 
         nativeDetour =
-            Il2CppInteropRuntime.Instance.DetourProvider.Create(originalNativeMethodInfo.MethodPointer, unmanagedDelegate);
+            Il2CppInteropRuntime.Instance.DetourProvider.Create(originalNativeMethodInfo.MethodPointer,
+                unmanagedDelegate, specialReturnBuffer);
         nativeDetour.Apply();
         modifiedNativeMethodInfo.MethodPointer = nativeDetour.OriginalTrampoline;
 
         // TODO: Add an ILHook for the original unhollowed method to go directly to managedHookedMethod
         // Right now it goes through three times as much interop conversion as it needs to, when being called from managed side
-        return managedHookedMethod;
+        // HarmonyX 仅用返回值维护 replacement 到 original 的堆栈映射；其 MonoMod 后端尚不支持 Android。
+        return OperatingSystem.IsAndroid() ? null : managedHookedMethod;
     }
 
     /// <inheritdoc />
@@ -206,7 +212,8 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         return true;
     }
 
-    private DynamicMethodDefinition GenerateNativeToManagedTrampoline(MethodInfo targetManagedMethodInfo)
+    private DynamicMethodDefinition GenerateNativeToManagedTrampoline(MethodInfo targetManagedMethodInfo,
+        out bool specialReturnBuffer)
     {
         // managedParams are the interop types used on the managed side
         // unmanagedParams are IntPtr references that are used by IL2CPP compiled assembly
@@ -225,13 +232,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         }
 
         var hasReturnBuffer = isReturnValueType && IsReturnBufferNeeded(returnSize);
+        specialReturnBuffer = hasReturnBuffer &&
+                              RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
         if (hasReturnBuffer)
-        // C compilers seem to return large structs by allocating a return buffer on caller's side and passing it as the first parameter
-        // TODO: Handle ARM
         // TODO: Check if this applies to values other than structs
         {
             unmanagedReturnType = typeof(IntPtr);
-            paramStartIndex++;
+            if (!specialReturnBuffer)
+                paramStartIndex++;
         }
 
         if (!Original.IsStatic)
@@ -244,7 +252,7 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
             new Type[managedParams.Length + paramStartIndex +
                      1]; // +1 for methodInfo at the end
 
-        if (hasReturnBuffer)
+        if (hasReturnBuffer && !specialReturnBuffer)
         // With GCC the return buffer seems to be the first param, same is likely with other compilers too
         {
             unmanagedParams[0] = typeof(IntPtr);
@@ -266,6 +274,14 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
         var il = dmd.GetILGenerator();
         il.BeginExceptionBlock();
+
+        LocalBuilder returnBufferVariable = null;
+        if (specialReturnBuffer)
+        {
+            returnBufferVariable = il.DeclareLocal(typeof(IntPtr));
+            il.Emit(OpCodes.Call, GetArm64ReturnBufferMethodInfo);
+            il.Emit(OpCodes.Stloc, returnBufferVariable);
+        }
 
         // Declare a list of variables to dereference back to the original pointers.
         // This is required due to the needed interop type conversions, so we can't directly pass some addresses as byref types
@@ -317,7 +333,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
         {
             if (hasReturnBuffer)
             {
-                il.Emit(OpCodes.Ldarg_0);
+                if (specialReturnBuffer)
+                    il.Emit(OpCodes.Ldloc, returnBufferVariable);
+                else
+                    il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Ldloc, managedReturnVariable);
                 il.Emit(OpCodes.Call, ObjectBaseToPtrNotNullMethodInfo);
                 EmitUnbox(il);
@@ -325,7 +344,10 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
                 il.Emit(OpCodes.Cpblk);
 
                 // Return the same pointer to the return buffer
-                il.Emit(OpCodes.Ldarg_0);
+                if (specialReturnBuffer)
+                    il.Emit(OpCodes.Ldloc, returnBufferVariable);
+                else
+                    il.Emit(OpCodes.Ldarg_0);
             }
             else
             {
@@ -350,6 +372,9 @@ internal unsafe class Il2CppDetourMethodPatcher : MethodPatcher
 
     private static void ReportException(Exception ex) =>
         Logger.Instance.LogError(ex, "During invoking native->managed trampoline");
+
+    [DllImport("modbootstrap", EntryPoint = "mod_get_return_buffer", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr GetArm64ReturnBuffer();
 
     private static void EmitConvertManagedTypeToIL2CPP(ILGenerator il, Type returnType)
     {

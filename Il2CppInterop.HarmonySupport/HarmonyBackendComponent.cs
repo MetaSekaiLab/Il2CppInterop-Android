@@ -16,9 +16,27 @@ public static class HarmonySupport
 
 internal class HarmonySupportComponent : IHostComponent
 {
-    public void Dispose() => PatchManager.ResolvePatcher -= TryResolve;
+    public void Dispose()
+    {
+        PatchManager.ResolvePatcher -= TryResolve;
+        if (OperatingSystem.IsAndroid())
+        {
+            PatchManager.ResolvePatcher -= ManagedMethodPatcher.TryResolve;
+        }
+    }
 
-    public void Start() => PatchManager.ResolvePatcher += TryResolve;
+    public void Start()
+    {
+        if (OperatingSystem.IsAndroid())
+        {
+            PatchManager.ClearAllPatcherResolvers();
+            PatchManager.ResolvePatcher += ManagedMethodPatcher.TryResolve;
+            PatchManager.ResolvePatcher += TryResolve;
+            return;
+        }
+
+        PatchManager.ResolvePatcher += TryResolve;
+    }
 
     private static void TryResolve(object sender, PatchManager.PatcherResolverEventArgs args)
     {

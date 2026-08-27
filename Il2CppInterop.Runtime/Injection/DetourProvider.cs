@@ -15,7 +15,8 @@ public interface IDetour : IDisposable
 
 public interface IDetourProvider
 {
-    IDetour Create<TDelegate>(nint original, TDelegate target) where TDelegate : Delegate;
+    IDetour Create<TDelegate>(nint original, TDelegate target, bool specialReturnBuffer = false)
+        where TDelegate : Delegate;
 }
 
 internal static class Detour
