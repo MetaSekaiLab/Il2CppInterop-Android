@@ -59,7 +59,7 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
 
         public override IntPtr FindTargetMethod()
         {
-            var genericMethodGetMethod = s_Signatures
+            nint genericMethodGetMethod = InjectorHelpers.Il2CppModule == null ? 0 : s_Signatures
                 .Select(s => MemoryUtils.FindSignatureInModule(InjectorHelpers.Il2CppModule, s))
                 .FirstOrDefault(p => p != 0);
 

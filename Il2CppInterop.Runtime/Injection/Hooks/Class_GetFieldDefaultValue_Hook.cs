@@ -140,7 +140,7 @@ namespace Il2CppInterop.Runtime.Injection.Hooks
             // NOTE: In some cases this pointer will be MetadataCache::GetFieldDefaultValueForField due to Field::GetDefaultFieldValue being
             // inlined but we'll treat it the same even though it doesn't receive the type parameter the RDX register
             // doesn't get cleared so we still get the same parameters
-            var classGetDefaultFieldValue = s_Signatures
+            nint classGetDefaultFieldValue = InjectorHelpers.Il2CppModule == null ? 0 : s_Signatures
                 .Select(s => MemoryUtils.FindSignatureInModule(InjectorHelpers.Il2CppModule, s))
                 .FirstOrDefault(p => p != 0);
 

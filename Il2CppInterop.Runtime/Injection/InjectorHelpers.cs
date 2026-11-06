@@ -27,12 +27,14 @@ namespace Il2CppInterop.Runtime.Injection
         internal static Assembly Il2CppMscorlib = typeof(Il2CppSystem.Type).Assembly;
         internal static INativeAssemblyStruct InjectedAssembly;
         internal static INativeImageStruct InjectedImage;
-        internal static ProcessModule Il2CppModule = Process.GetCurrentProcess()
+        // Android native bridges can map guest code without executable host pages.
+        // Process.Modules omits those mappings; use the bootstrap's library path instead.
+        internal static ProcessModule? Il2CppModule = OperatingSystem.IsAndroid() ? null : Process.GetCurrentProcess()
             .Modules.OfType<ProcessModule>()
             .Single((x) => x.ModuleName is "GameAssembly.dll" or "GameAssembly.dylib" or "GameAssembly.so" or "libil2cpp.so" or "UserAssembly.dll" || string.Equals(x.ModuleName, "GameAssembly.dll", StringComparison.OrdinalIgnoreCase));
 
         internal static IntPtr Il2CppHandle = OperatingSystem.IsAndroid()
-            ? NativeLibrary.Load(Il2CppModule.FileName)
+            ? NativeLibrary.Load(Environment.GetEnvironmentVariable("BEPINEX_GAME_ASSEMBLY_PATH") ?? "libil2cpp.so")
             : NativeLibrary.Load("GameAssembly", typeof(InjectorHelpers).Assembly, null);
 
         internal static readonly Dictionary<Type, OpCode> StIndOpcodes = new()
@@ -116,7 +118,7 @@ namespace Il2CppInterop.Runtime.Injection
         {
             if (!TryGetIl2CppExport(name, out var address))
             {
-                throw new NotSupportedException($"Couldn't find {name} in {Il2CppModule.ModuleName}'s exports");
+                throw new NotSupportedException($"Couldn't find {name} in {Il2CppModule?.ModuleName ?? "libil2cpp.so"}'s exports");
             }
 
             return address;
@@ -191,10 +193,10 @@ namespace Il2CppInterop.Runtime.Injection
                     return classInit;
                 }
 
-                Logger.Instance.LogTrace("GameAssembly.dll: 0x{Il2CppModuleAddress}", Il2CppModule.BaseAddress.ToInt64().ToString("X2"));
+                Logger.Instance.LogTrace("IL2CPP module: 0x{Il2CppModuleAddress}", (Il2CppModule?.BaseAddress ?? IntPtr.Zero).ToInt64().ToString("X2"));
                 throw new NotSupportedException("Failed to use signature for Class::Init and a substitute cannot be found, please create an issue and report your unity version & game");
             }
-            nint pClassInit = s_ClassInitSignatures
+            nint pClassInit = Il2CppModule == null ? 0 : s_ClassInitSignatures
                 .Select(s => MemoryUtils.FindSignatureInModule(Il2CppModule, s))
                 .FirstOrDefault(p => p != 0);
 
